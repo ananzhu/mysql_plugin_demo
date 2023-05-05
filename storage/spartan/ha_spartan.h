@@ -49,6 +49,7 @@
 #include "sql/table.h"
 
 #include "storage/spartan/spartan_data.h"
+#include "storage/spartan/spartan_index.h"
 
 /** @brief
   Spartan_share is a class that will be shared among all open handlers.
@@ -60,6 +61,7 @@ class Spartan_share : public Handler_share {
   mysql_mutex_t mutex;
 
   Spartan_data *data_class;
+  Spartan_index *index_class;
   
   Spartan_share();
   ~Spartan_share() 
@@ -70,9 +72,14 @@ class Spartan_share : public Handler_share {
     if (data_class != NULL) {
       delete data_class;
     }
+    if (index_class != NULL) {
+      delete index_class;
+    }
     data_class = NULL;
+    index_class = NULL;
   }
 };
+
 
 /** @brief
   Class definition for the storage engine
@@ -95,6 +102,8 @@ class ha_spartan : public handler {
     The name that will be used for display purposes.
    */
   const char *table_type() const { return "SPARTAN"; }
+
+  const char *index_type(uint inx) { return "Spartan_index class"; }
 
   const char **bas_ext() const;
 
@@ -136,7 +145,8 @@ class ha_spartan : public handler {
   */
   ulong index_flags(uint inx [[maybe_unused]], uint part [[maybe_unused]],
                     bool all_parts [[maybe_unused]]) const override {
-    return 0;
+     return (HA_READ_NEXT | HA_READ_PREV | HA_READ_RANGE |
+             HA_READ_ORDER | HA_KEYREAD_ONLY);
   }
 
   /** @brief
@@ -232,12 +242,21 @@ class ha_spartan : public handler {
   */
   int delete_row(const uchar *buf) override;
 
+
+  //int index_init(uint keynr, bool sorted) override;
+  int index_read(uchar *buf, const uchar *key, uint key_len,
+                 enum ha_rkey_function find_flag) override;
+  // 函数读取一个索引文档，该文档包含整个表的所有键值以及其对应的行指针。
+  virtual int index_read_idx(uchar *buf, uint index, const uchar *key,
+                             uint key_len, enum ha_rkey_function find_flag);
+
+  int index_next(uchar *buf) override;
+
   /** @brief
     We implement this in ha_example.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  // int index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,
-  //                    enum ha_rkey_function find_flag) override;
+  int index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,enum ha_rkey_function find_flag) override;
 
   /** @brief
     We implement this in ha_example.cc. It's not an obligatory method;
@@ -249,19 +268,19 @@ class ha_spartan : public handler {
     We implement this in ha_example.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  // int index_prev(uchar *buf) override;
+  int index_prev(uchar *buf) override;
 
   /** @brief
     We implement this in ha_example.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  // int index_first(uchar *buf) override;
+  int index_first(uchar *buf) override;
 
   /** @brief
     We implement this in ha_example.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
- // int index_last(uchar *buf) override;
+  int index_last(uchar *buf) override;
 
   /** @brief
     Unlike index_init(), rnd_init() can be called two consecutive times
@@ -289,6 +308,10 @@ class ha_spartan : public handler {
                    dd::Table *to_table_def) override;
   int create(const char *name, TABLE *form, HA_CREATE_INFO *create_info,
              dd::Table *table_def) override;  ///< required
+
+  uchar *get_key();
+  uchar *create_key_buffer(unsigned int length);
+  int get_key_len();
 
   THR_LOCK_DATA **store_lock(
       THD *thd, THR_LOCK_DATA **to,

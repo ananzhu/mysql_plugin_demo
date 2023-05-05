@@ -6,6 +6,7 @@
 #include "mysql/components/services/bits/psi_bits.h"
 #include <string.h>
 
+
 Spartan_data::Spartan_data(void)
 {
     data_file = -1;
