@@ -101,10 +101,15 @@
 #include "mysql/plugin.h"
 #include "sql/sql_class.h"
 #include "sql/sql_plugin.h"
+#include "sql/field.h"
 #include "typelib.h"                        
 #include "my_sys.h"
 #include "sql/handler.h"
 
+
+// PSI_memory_key Spartan_key_memory_Transparent_file;
+
+// PSI_memory_key Spartan_key_memory_record_buffer;
 
 static handler *spartan_create_handler(handlerton *hton, TABLE_SHARE *table,
                                        bool partitioned, MEM_ROOT *mem_root);
@@ -134,13 +139,13 @@ static void init_spartan_psi_keys()
 }
 #endif
 
-
 Spartan_share::Spartan_share() 
 { 
    thr_lock_init(&lock); 
-   mysql_mutex_init(ex_key_mutex_Spartan_share_mutex, 
-                   &mutex, MY_MUTEX_INIT_FAST);
+   mysql_mutex_init(ex_key_mutex_Spartan_share_mutex,&mutex, MY_MUTEX_INIT_FAST);
    data_class = new Spartan_data();
+
+   index_class = new Spartan_index(4);
    //TODO index class implementation
 }
 
@@ -277,9 +282,17 @@ int ha_spartan::open(const char *name, int mode, uint test_if_lock, const dd::Ta
   if (!(share = get_share())) 
     DBUG_RETURN(1);
   
-  fn_format(name_buff, name, "", SDE_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+  // fn_format(name_buff, name, "", SDE_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+  fn_format(name_buff, name, "", SDE_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+  
   share->data_class->open_table(name_buff);
   //TODO index
+  // fn_format(name_buff, name, "", SDI_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+  fn_format(name_buff, name, "", SDI_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+  share->index_class->open_index(name_buff);
+  share->index_class->load_index();
+  // 用current_positio初始化位置
+  current_position = 0;
   thr_lock_data_init(&share->lock, &lock, nullptr);
 
   DBUG_RETURN(0);
@@ -304,8 +317,53 @@ int ha_spartan::close(void) {
   DBUG_TRACE;
   DBUG_ENTER("ha_spartan::close");
   share->data_class->close_table();
+  share->index_class->save_index();
+  share->index_class->destroy_index();
+  share->index_class->close_index();
   //TODO index
   DBUG_RETURN(0);
+}
+
+uchar *ha_spartan::get_key() {
+  uchar *key = nullptr;
+  DBUG_ENTER("ha_spartan::get_key");  
+  /*
+  For each field in the table, check to see if it is the key
+  by checking the key_start variable. (1 = is a key).
+  */
+  for (Field **field=table->field ; *field ; field++)
+  {
+    if ((*field)->key_start.to_ulonglong() == 1)
+    {
+      /*
+      Copy field value to key value (save key)
+      */
+      key = (uchar *)my_malloc(PSI_NOT_INSTRUMENTED,((*field)->field_length),MYF(MY_ZEROFILL | MY_WME));
+      memcpy(key, (*field)->field_ptr(), (*field)->key_length());
+    }
+  }
+  DBUG_RETURN(key);
+}
+
+
+
+int ha_spartan::get_key_len()
+{
+  int length = 0;
+  DBUG_ENTER("ha_spartan::get_key");
+  /*
+  For each field in the table, check to see if it is the key
+  by checking the key_start variable. (1 = is a key).
+  */
+  for (Field **field=table->field ; *field ; field++)
+  {
+    if ((*field)->key_start.to_ulonglong() == 1)
+    /*
+    Copy field length to key length
+    */
+    length = (*field)->key_length();
+  }
+ DBUG_RETURN(length);
 }
 
 /**
@@ -340,14 +398,27 @@ int ha_spartan::close(void) {
 
 int ha_spartan::write_row(uchar *buf) {
   DBUG_TRACE;
-  DBUG_ENTER("ha_spartan::write_row");
   long long pos;
+  SDE_INDEX ndx;
+  DBUG_ENTER("ha_spartan::write_row");
 
   ha_statistic_increment(&System_status_var::ha_write_count);
+  // TODO index
+  ndx.length = get_key_len();
+  memcpy(ndx.key, get_key(), get_key_len());
+
+  
   mysql_mutex_lock(&share->mutex);
 
   pos = share->data_class->write_row(buf, table->s->rec_buff_length);
-  pos = pos + 1;
+  //   // 索引地址
+  // pos = share->index_class->write_row(&ndx);
+  // 数据地址
+  ndx.pos = pos;
+
+  if ((ndx.key != 0) && (ndx.length != 0))
+    share->index_class->insert_key(&ndx, false);
+  
   mysql_mutex_unlock(&share->mutex);
   DBUG_RETURN(0);
 }
@@ -379,8 +450,15 @@ int ha_spartan::update_row(const uchar *old_data, uchar *new_data) {
   DBUG_TRACE;
   DBUG_ENTER("ha_spartan::update_row");
   mysql_mutex_lock(&(share->mutex));
-  share->data_class->update_row((uchar *)old_data, new_data, table->s->rec_buff_length,
-                                current_position - share->data_class->row_size(table->s->rec_buff_length));
+  share->data_class->update_row((uchar *)old_data, new_data, table->s->rec_buff_length,current_position - share->data_class->row_size(table->s->rec_buff_length));
+  
+  if (get_key() != 0)
+  {
+    share->index_class->update_key(get_key(), current_position - share->data_class->row_size(table->s->rec_buff_length),get_key_len());
+    share->index_class->save_index();
+    share->index_class->load_index();
+  }
+  
   mysql_mutex_unlock(&share->mutex);
   DBUG_RETURN(0);
 }
@@ -407,17 +485,20 @@ int ha_spartan::update_row(const uchar *old_data, uchar *new_data) {
 
 int ha_spartan::delete_row(const uchar *buf) {
   DBUG_TRACE;
-  DBUG_ENTER("ha_spartan::delete_row");
   long long pos;
+  DBUG_ENTER("ha_spartan::delete_row");
+
 
   if (current_position > 0)
-    pos = current_position -
-          share->data_class->row_size(table->s->rec_buff_length);
+    pos = current_position - share->data_class->row_size(table->s->rec_buff_length);
   else
     pos = 0;
 
   mysql_mutex_lock(&share->mutex);
   share->data_class->delete_row((uchar *)buf, table->s->rec_buff_length, pos);
+
+  if (get_key() != 0)
+   share->index_class->delete_key(get_key(), pos, get_key_len());
   mysql_mutex_unlock(&share->mutex);
 
   DBUG_RETURN(0);
@@ -430,37 +511,78 @@ int ha_spartan::delete_row(const uchar *buf) {
   index.
 */
 
-// int ha_example::index_read_map(uchar *, const uchar *, key_part_map,
-//                                enum ha_rkey_function) {
-//   int rc;
-//   DBUG_TRACE;
-//   rc = HA_ERR_WRONG_COMMAND;
-//   return rc;
-// }
+int ha_spartan::index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,enum ha_rkey_function find_flag) {
+  DBUG_TRACE;
+  DBUG_ENTER("ha_spartan::index_read_map");
+
+  // Find the key in the index based on the provided key value and find_flag
+  SDE_INDEX* result = share->index_class->seek_index(const_cast<uchar*>(key), get_key_len());
+
+  if (result == nullptr)
+  {
+    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+  }
+
+  // Get the position of the found key in the data file
+  long long pos = share->index_class->get_index_pos((uchar *)key, get_key_len());
+
+  if (pos == -1)
+  {
+    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+  }
+
+  // Read the row data from the data file
+  share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+
+  DBUG_RETURN(0);
+}
 
 /**
   @brief
   Used to read forward through the index.
 */
 
-// int ha_spartan::index_next(uchar *) {
-//   int rc;
-//   DBUG_TRACE;
-//   rc = HA_ERR_WRONG_COMMAND;
-//   return rc;
-// }
+int ha_spartan::index_next(uchar *buf) {
+  DBUG_TRACE;
+
+  uchar *key = nullptr;
+  long long pos;
+
+  DBUG_ENTER("ha_spartan::index_next");
+  key = share->index_class->get_next_key();
+  if (key == 0)
+    DBUG_RETURN(HA_ERR_END_OF_FILE);
+  pos = share->index_class->get_index_pos((uchar *)key, get_key_len());
+  share->index_class->seek_index(key, get_key_len());
+  share->index_class->get_next_key();
+  if (pos == -1)
+    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+  share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+
+  DBUG_RETURN(0);
+}
 
 /**
   @brief
   Used to read backwards through the index.
 */
 
-// int ha_example::index_prev(uchar *) {
-//   int rc;
-//   DBUG_TRACE;
-//   rc = HA_ERR_WRONG_COMMAND;
-//   return rc;
-// }
+
+int ha_spartan::index_prev(uchar *buf) {
+  uchar *key = nullptr;
+  long long pos;
+  DBUG_ENTER("ha_spartan::index_prev");
+  key = share->index_class->get_prev_key();
+  if (key == 0)
+    DBUG_RETURN(HA_ERR_END_OF_FILE);
+  pos = share->index_class->get_index_pos((uchar *)key, get_key_len());
+  share->index_class->seek_index(key, get_key_len());
+  share->index_class->get_prev_key();
+  if (pos == -1)
+    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+  share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+  DBUG_RETURN(0);
+}
 
 /**
   @brief
@@ -472,12 +594,17 @@ int ha_spartan::delete_row(const uchar *buf) {
   @see
   opt_range.cc, opt_sum.cc, sql_handler.cc and sql_select.cc
 */
-// int ha_example::index_first(uchar *) {
-//   int rc;
-//   DBUG_TRACE;
-//   rc = HA_ERR_WRONG_COMMAND;
-//   return rc;
-// }
+
+
+int ha_spartan::index_first(uchar *buf) {
+  uchar *key = nullptr;
+  DBUG_ENTER("ha_example::index_first");
+  key = share->index_class->get_first_key();
+  if (key == 0)
+    DBUG_RETURN(HA_ERR_END_OF_FILE);
+  memcpy(buf, key, get_key_len());
+  DBUG_RETURN(0);
+}
 
 /**
   @brief
@@ -489,12 +616,17 @@ int ha_spartan::delete_row(const uchar *buf) {
   @see
   opt_range.cc, opt_sum.cc, sql_handler.cc and sql_select.cc
 */
-// int ha_example::index_last(uchar *) {
-//   int rc;
-//   DBUG_TRACE;
-//   rc = HA_ERR_WRONG_COMMAND;
-//   return rc;
-// }
+
+
+int ha_spartan::index_last(uchar *buf) {
+  uchar *key = nullptr;
+  DBUG_ENTER("ha_example::index_last");
+  key = share->index_class->get_last_key();
+  if (key == 0)
+    DBUG_RETURN(HA_ERR_END_OF_FILE);
+  memcpy(buf, key, get_key_len());
+  DBUG_RETURN(0);
+}
 
 /**
   @brief
@@ -699,8 +831,8 @@ int ha_spartan::delete_all_rows()
   mysql_mutex_lock(&share->mutex);
 
   share->data_class->trunc_table();
-  // share->index_class->destroy_index();
-  // share->index_class->trunc_index();
+  share->index_class->destroy_index();
+  share->index_class->trunc_index();
 
   mysql_mutex_unlock(&share->mutex);
 
@@ -805,21 +937,29 @@ THR_LOCK_DATA **ha_spartan::store_lock(THD *thd,
 
 int ha_spartan::delete_table(const char *name, const dd::Table *table_def)
 {
-  DBUG_ENTER("ha_spartan::delete_table");
+    DBUG_ENTER("ha_spartan::delete_table");
 
-  char name_buff[FN_REFLEN];
+    char data_file[FN_REFLEN];
+    char index_file[FN_REFLEN];
 
-  share->data_class->close_table();
-  /*
-   * Call the mysql delete file methd.
-   * Note: the fn_format() method correctly creates a file name from
-   * the name passed into the method.
-   */
-  fn_format(name_buff, name, "", SDE_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
-  my_delete(name_buff, MYF(0));
-  //TODO index
+    // Format the data file name
+    // fn_format(data_file, name, "", SDE_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
 
-  DBUG_RETURN(0);
+    // Format the index file name
+    // fn_format(index_file, name, "", SDI_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+
+    fn_format(data_file, name, "", SDE_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+
+    fn_format(index_file, name, "", SDI_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+
+
+    // Delete the data file
+    my_delete(data_file, MYF(0));
+
+    // Delete the index file
+    my_delete(index_file, MYF(0));
+
+    DBUG_RETURN(0);
 }
 
 /**
@@ -839,19 +979,63 @@ int ha_spartan::delete_table(const char *name, const dd::Table *table_def)
 int ha_spartan::rename_table(const char * from, const char * to,  const dd::Table *from_table_def,
                    dd::Table *to_table_def)
 {
-    DBUG_ENTER("ha_spartan::rename_table ");
+    DBUG_ENTER("ha_spartan::rename_table");
 
     char data_from[FN_REFLEN];
     char data_to[FN_REFLEN];
+    char index_from[FN_REFLEN];
+    char index_to[FN_REFLEN];
 
-    fn_format(data_from, from, "", SDE_EXT,
-                MY_REPLACE_EXT|MY_UNPACK_FILENAME);
-    fn_format(data_to, to, "", SDE_EXT,
-                MY_REPLACE_EXT|MY_UNPACK_FILENAME);
+
+    // Format the data file names
+    // fn_format(data_from,from,"",SDE_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+    // fn_format(data_to,to,"",SDE_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+
+    fn_format(data_from, from, "", SDE_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+    fn_format(data_to, to, "", SDE_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+
+
+    // Format the index file names
+    // fn_format(index_from, from, "", SDI_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+    // fn_format(index_to, to, "", SDI_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+
+    fn_format(index_from, from, "", SDI_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+    fn_format(index_to, to, "", SDI_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
 
     my_rename(data_from, data_to, MYF(0));
 
+    my_rename(index_from, index_to, MYF(0));
+
     DBUG_RETURN(0);
+}
+
+
+int ha_spartan::index_read(uchar *buf, const uchar *key, uint key_len, enum ha_rkey_function find_flag) {
+  long long pos;
+
+  DBUG_ENTER("ha_archive::index_read");
+  if (key == nullptr)
+    pos = share->index_class->get_first_pos();
+  else
+    pos = share->index_class->get_index_pos((uchar *)key, key_len);
+  if (pos == -1)
+    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+  current_position = pos + share->data_class->row_size(table->s->rec_buff_length);
+  share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+  share->index_class->get_next_key();
+  DBUG_RETURN(0);
+
+}
+
+int ha_spartan::index_read_idx(uchar *buf, uint index, const uchar *key,
+                               uint key_len, enum ha_rkey_function) {
+  long long pos;
+  DBUG_ENTER("ha_spartan::index_read_idx");
+  pos = share->index_class->get_index_pos((uchar *)key, key_len);
+  if (pos == -1)
+    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+  share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+  DBUG_RETURN(0);
 }
 
 /**
@@ -912,15 +1096,25 @@ int ha_spartan::create(const char *name, TABLE *table_arg,
     * Note: the fn_format() method correctly creates a file name from the name
     * passed into the method.
     */
-    fn_format(name_buff, name, "", SDE_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+    // fn_format(name_buff, name, "", SDE_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+    fn_format(name_buff, name, "", SDE_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
     if (share->data_class->create_table(name_buff))
     {
         DBUG_PRINT("info", ("hot here 0"));
         DBUG_RETURN(-1);
     }
-    share->data_class->close_table();
 
     //TODO index
+    // fn_format(name_buff, name, "", SDI_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
+    fn_format(name_buff, name, "", SDI_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
+    if (share->index_class->create_index(name_buff,128))
+    {
+        DBUG_PRINT("info", ("hot here 1"));
+        DBUG_RETURN(-1);
+    }
+    share->index_class->close_index();
+    share->data_class->close_table();
+
     DBUG_RETURN(0);
 }
 
@@ -934,10 +1128,10 @@ static int srv_signed_int_var = 0;
 static long srv_signed_long_var = 0;
 static longlong srv_signed_longlong_var = 0;
 
-const char *enum_var_names[] = {"spartan_test1", "spartan_test2", NullS};
+const char *enum_var_names1[] = {"spartan_test1", "spartan_test2", NullS};
 
-TYPELIB enum_var_typelib = {array_elements(enum_var_names) - 1,
-                            "enum_var_typelib", enum_var_names, nullptr};
+TYPELIB enum_var_typelib1 = {array_elements(enum_var_names1) - 1,
+                            "enum_var_typelib1", enum_var_names1, nullptr};
 
 static MYSQL_SYSVAR_ENUM(enum_var,                        // name
                          srv_enum_var,                    // varname
@@ -946,7 +1140,7 @@ static MYSQL_SYSVAR_ENUM(enum_var,                        // name
                          nullptr,                         // check
                          nullptr,                         // update
                          0,                               // def
-                         &enum_var_typelib);              // typelib
+                         &enum_var_typelib1);              // typelib
 
 static MYSQL_SYSVAR_ULONG(ulong_var, srv_ulong_var, PLUGIN_VAR_RQCMDARG,
                           "0..1000", nullptr, nullptr, 8, 0, 1000, 0);
