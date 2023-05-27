@@ -145,7 +145,9 @@ Spartan_share::Spartan_share()
    mysql_mutex_init(ex_key_mutex_Spartan_share_mutex,&mutex, MY_MUTEX_INIT_FAST);
    data_class = new Spartan_data();
 
-   index_class = new Spartan_index(4);
+   index_tree1 = new art_tree();   
+
+   index_class = new Spartan_index(index_tree1,8);
    //TODO index class implementation
 }
 
@@ -290,7 +292,7 @@ int ha_spartan::open(const char *name, int mode, uint test_if_lock, const dd::Ta
   // fn_format(name_buff, name, "", SDI_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
   fn_format(name_buff, name, "", SDI_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
   share->index_class->open_index(name_buff);
-  share->index_class->load_index();
+  // share->index_class->load_index();
   // 用current_positio初始化位置
   current_position = 0;
   thr_lock_data_init(&share->lock, &lock, nullptr);
@@ -317,9 +319,17 @@ int ha_spartan::close(void) {
   DBUG_TRACE;
   DBUG_ENTER("ha_spartan::close");
   share->data_class->close_table();
-  share->index_class->save_index();
-  share->index_class->destroy_index();
-  share->index_class->close_index();
+  // share->index_class->save_index();
+
+
+
+
+  // share->index_class->destroy_index(index_tree);
+
+
+
+
+  // share->index_class->close_index();
   //TODO index
   DBUG_RETURN(0);
 }
@@ -399,13 +409,16 @@ int ha_spartan::get_key_len()
 int ha_spartan::write_row(uchar *buf) {
   DBUG_TRACE;
   long long pos;
-  SDE_INDEX ndx;
+  // art_tree *index_tree;
+  // art_tree *index_tree = (art_tree*)malloc(sizeof(art_tree));
+  // art_leaf *leaf;
+  art_leaf *leaf = (art_leaf*)malloc(sizeof(art_leaf));
   DBUG_ENTER("ha_spartan::write_row");
 
   ha_statistic_increment(&System_status_var::ha_write_count);
   // TODO index
-  ndx.length = get_key_len();
-  memcpy(ndx.key, get_key(), get_key_len());
+  leaf->key_len = get_key_len();
+  memcpy(leaf->key, get_key(), get_key_len());
 
   
   mysql_mutex_lock(&share->mutex);
@@ -414,10 +427,11 @@ int ha_spartan::write_row(uchar *buf) {
   //   // 索引地址
   // pos = share->index_class->write_row(&ndx);
   // 数据地址
-  ndx.pos = pos;
+  leaf->pos = pos;
 
-  if ((ndx.key != 0) && (ndx.length != 0))
-    share->index_class->insert_key(&ndx, false);
+  if ((leaf->key != 0) && (leaf->key_len != 0))
+    share->index_class->insert_key(share->index_tree1, leaf->key, leaf->pos, leaf->key_len);
+
   
   mysql_mutex_unlock(&share->mutex);
   DBUG_RETURN(0);
@@ -450,13 +464,16 @@ int ha_spartan::update_row(const uchar *old_data, uchar *new_data) {
   DBUG_TRACE;
   DBUG_ENTER("ha_spartan::update_row");
   mysql_mutex_lock(&(share->mutex));
-  share->data_class->update_row((uchar *)old_data, new_data, table->s->rec_buff_length,current_position - share->data_class->row_size(table->s->rec_buff_length));
+
+  long long pos_current = current_position - share->data_class->row_size(table->s->rec_buff_length);
+
+  share->data_class->update_row((uchar *)old_data, new_data, table->s->rec_buff_length,pos_current);
   
   if (get_key() != 0)
   {
-    share->index_class->update_key(get_key(), current_position - share->data_class->row_size(table->s->rec_buff_length),get_key_len());
-    share->index_class->save_index();
-    share->index_class->load_index();
+    share->index_class->update_key(share->index_tree1 ,get_key(), get_key_len(), pos_current);
+    // share->index_class->save_index();
+    // share->index_class->load_index();
   }
   
   mysql_mutex_unlock(&share->mutex);
@@ -488,6 +505,12 @@ int ha_spartan::delete_row(const uchar *buf) {
   long long pos;
   DBUG_ENTER("ha_spartan::delete_row");
 
+  art_leaf *leaf = (art_leaf*)malloc(sizeof(art_leaf));
+
+  leaf->key_len = get_key_len();
+  memcpy(leaf->key, get_key(), get_key_len());
+
+
 
   if (current_position > 0)
     pos = current_position - share->data_class->row_size(table->s->rec_buff_length);
@@ -498,7 +521,8 @@ int ha_spartan::delete_row(const uchar *buf) {
   share->data_class->delete_row((uchar *)buf, table->s->rec_buff_length, pos);
 
   if (get_key() != 0)
-   share->index_class->delete_key(get_key(), pos, get_key_len());
+    share->index_class->delete_key(share->index_tree1 ,leaf->key ,leaf->key_len);
+   
   mysql_mutex_unlock(&share->mutex);
 
   DBUG_RETURN(0);
@@ -511,56 +535,56 @@ int ha_spartan::delete_row(const uchar *buf) {
   index.
 */
 
-int ha_spartan::index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,enum ha_rkey_function find_flag) {
-  DBUG_TRACE;
-  DBUG_ENTER("ha_spartan::index_read_map");
+// int ha_spartan::index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,enum ha_rkey_function find_flag) {
+//   DBUG_TRACE;
+//   DBUG_ENTER("ha_spartan::index_read_map");
 
-  // Find the key in the index based on the provided key value and find_flag
-  SDE_INDEX* result = share->index_class->seek_index(const_cast<uchar*>(key), get_key_len());
+//   // Find the key in the index based on the provided key value and find_flag
+//   art_leaf* art_leaf2 = share->index_class->seek_index(share->index_tree1, (uchar*)key, get_key_len());
 
-  if (result == nullptr)
-  {
-    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
-  }
+//   if (art_leaf2 == NULL)
+//   {
+//     DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+//   }
 
-  // Get the position of the found key in the data file
-  long long pos = share->index_class->get_index_pos((uchar *)key, get_key_len());
+//   // Get the position of the found key in the data file
+//   long long pos = share->index_class->get_index_pos(share->index_tree1 ,(uchar *)key, get_key_len());
 
-  if (pos == -1)
-  {
-    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
-  }
+//   if (pos == -1)
+//   {
+//     DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+//   }
 
-  // Read the row data from the data file
-  share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+//   // Read the row data from the data file
+//   share->data_class->read_row(buf, table->s->rec_buff_length, pos);
 
-  DBUG_RETURN(0);
-}
+//   DBUG_RETURN(0);
+// }
 
 /**
   @brief
   Used to read forward through the index.
 */
 
-int ha_spartan::index_next(uchar *buf) {
-  DBUG_TRACE;
+// int ha_spartan::index_next(uchar *buf) {
+//   DBUG_TRACE;
 
-  uchar *key = nullptr;
-  long long pos;
+//   uchar *key = nullptr;
+//   long long pos;
 
-  DBUG_ENTER("ha_spartan::index_next");
-  key = share->index_class->get_next_key();
-  if (key == 0)
-    DBUG_RETURN(HA_ERR_END_OF_FILE);
-  pos = share->index_class->get_index_pos((uchar *)key, get_key_len());
-  share->index_class->seek_index(key, get_key_len());
-  share->index_class->get_next_key();
-  if (pos == -1)
-    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
-  share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+//   DBUG_ENTER("ha_spartan::index_next");
+//   key = share->index_class->get_next_key();
+//   if (key == 0)
+//     DBUG_RETURN(HA_ERR_END_OF_FILE);
+//   pos = share->index_class->get_index_pos((uchar *)key, get_key_len());
+//   share->index_class->seek_index(key, get_key_len());
+//   share->index_class->get_next_key();
+//   if (pos == -1)
+//     DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+//   share->data_class->read_row(buf, table->s->rec_buff_length, pos);
 
-  DBUG_RETURN(0);
-}
+//   DBUG_RETURN(0);
+// }
 
 /**
   @brief
@@ -568,21 +592,21 @@ int ha_spartan::index_next(uchar *buf) {
 */
 
 
-int ha_spartan::index_prev(uchar *buf) {
-  uchar *key = nullptr;
-  long long pos;
-  DBUG_ENTER("ha_spartan::index_prev");
-  key = share->index_class->get_prev_key();
-  if (key == 0)
-    DBUG_RETURN(HA_ERR_END_OF_FILE);
-  pos = share->index_class->get_index_pos((uchar *)key, get_key_len());
-  share->index_class->seek_index(key, get_key_len());
-  share->index_class->get_prev_key();
-  if (pos == -1)
-    DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
-  share->data_class->read_row(buf, table->s->rec_buff_length, pos);
-  DBUG_RETURN(0);
-}
+// int ha_spartan::index_prev(uchar *buf) {
+//   uchar *key = nullptr;
+//   long long pos;
+//   DBUG_ENTER("ha_spartan::index_prev");
+//   key = share->index_class->get_prev_key();
+//   if (key == 0)
+//     DBUG_RETURN(HA_ERR_END_OF_FILE);
+//   pos = share->index_class->get_index_pos((uchar *)key, get_key_len());
+//   share->index_class->seek_index(key, get_key_len());
+//   share->index_class->get_prev_key();
+//   if (pos == -1)
+//     DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
+//   share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+//   DBUG_RETURN(0);
+// }
 
 /**
   @brief
@@ -599,7 +623,7 @@ int ha_spartan::index_prev(uchar *buf) {
 int ha_spartan::index_first(uchar *buf) {
   uchar *key = nullptr;
   DBUG_ENTER("ha_example::index_first");
-  key = share->index_class->get_first_key();
+  key = share->index_class->get_first_key(share->index_tree1);
   if (key == 0)
     DBUG_RETURN(HA_ERR_END_OF_FILE);
   memcpy(buf, key, get_key_len());
@@ -621,7 +645,7 @@ int ha_spartan::index_first(uchar *buf) {
 int ha_spartan::index_last(uchar *buf) {
   uchar *key = nullptr;
   DBUG_ENTER("ha_example::index_last");
-  key = share->index_class->get_last_key();
+  key = share->index_class->get_last_key(share->index_tree1);
   if (key == 0)
     DBUG_RETURN(HA_ERR_END_OF_FILE);
   memcpy(buf, key, get_key_len());
@@ -831,8 +855,16 @@ int ha_spartan::delete_all_rows()
   mysql_mutex_lock(&share->mutex);
 
   share->data_class->trunc_table();
-  share->index_class->destroy_index();
-  share->index_class->trunc_index();
+
+
+
+
+  share->index_class->destroy_index(share->index_tree1);
+
+
+
+
+  // share->index_class->trunc_index();
 
   mysql_mutex_unlock(&share->mutex);
 
@@ -1014,15 +1046,19 @@ int ha_spartan::index_read(uchar *buf, const uchar *key, uint key_len, enum ha_r
   long long pos;
 
   DBUG_ENTER("ha_archive::index_read");
-  if (key == nullptr)
-    pos = share->index_class->get_first_pos();
+
+
+
+
+  if (key == NULL)
+     pos = share->index_class->get_first_pos(share->index_tree1);
   else
-    pos = share->index_class->get_index_pos((uchar *)key, key_len);
+  pos = share->index_class->get_index_pos(share->index_tree1 ,(uchar *)key, key_len);
   if (pos == -1)
     DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
   current_position = pos + share->data_class->row_size(table->s->rec_buff_length);
   share->data_class->read_row(buf, table->s->rec_buff_length, pos);
-  share->index_class->get_next_key();
+  // share->index_class->get_next_key();
   DBUG_RETURN(0);
 
 }
@@ -1031,10 +1067,14 @@ int ha_spartan::index_read_idx(uchar *buf, uint index, const uchar *key,
                                uint key_len, enum ha_rkey_function) {
   long long pos;
   DBUG_ENTER("ha_spartan::index_read_idx");
-  pos = share->index_class->get_index_pos((uchar *)key, key_len);
+  pos = share->index_class->get_index_pos(share->index_tree1 , (uchar *)key, key_len);
   if (pos == -1)
     DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
   share->data_class->read_row(buf, table->s->rec_buff_length, pos);
+
+
+
+
   DBUG_RETURN(0);
 }
 
@@ -1112,7 +1152,7 @@ int ha_spartan::create(const char *name, TABLE *table_arg,
         DBUG_PRINT("info", ("hot here 1"));
         DBUG_RETURN(-1);
     }
-    share->index_class->close_index();
+    // share->index_class->close_index();
     share->data_class->close_table();
 
     DBUG_RETURN(0);
