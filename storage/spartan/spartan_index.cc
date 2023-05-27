@@ -62,7 +62,6 @@ int Spartan_index::create_index(char *path, int keylen)
     length variable.
   */
   block_size = max_key_len + sizeof(long long);
-  write_header();  
   DBUG_RETURN(0);
 }
 
@@ -78,138 +77,8 @@ int Spartan_index::open_index(char *path)
   index_file = my_open(path, O_RDWR | O_CREAT | 0, MYF(0));
   if(index_file == -1)
     DBUG_RETURN(errno);
-  read_header();
   DBUG_RETURN(0);
 }
-
-
-
-/* read header from file */
-int Spartan_index::read_header()
-{
-  int i;
-  uchar len;
-
-  DBUG_ENTER("Spartan_index::read_header");
-  if (block_size == -1)
-  {  
-    /*
-      Seek the start of the file.
-      Read the maximum key length value.
-    */
-    my_seek(index_file, 0l, MY_SEEK_SET, MYF(0));
-    i = my_read(index_file, &len, sizeof(int), MYF(0));
-    memcpy(&max_key_len, &len, sizeof(int));
-    /*
-      Calculate block size as maximum key length plus
-      the size of the key plus the crashed status uchar.
-    */
-    block_size = max_key_len + sizeof(long long) + sizeof(int);
-    i = my_read(index_file, &len, sizeof(bool), MYF(0));
-    memcpy(&crashed, &len, sizeof(bool));
-  }
-  else
-  {
-    i = (int)my_seek(index_file, sizeof(int) + sizeof(bool), MY_SEEK_SET, MYF(0));
-  }
-  DBUG_RETURN(0);
-}
-
-
-
-
-
-/* write header to file */
-int Spartan_index::write_header()
-{
-  int i;
-  uchar len;
-
-  DBUG_ENTER("Spartan_index::write_header");
-  if (block_size != -1)
-  {
-    /*
-      Seek the start of the file and write the maximum key length
-      then write the crashed status uchar.
-    */
-    my_seek(index_file, 0l, MY_SEEK_SET, MYF(0));
-    memcpy(&len, &max_key_len, sizeof(int));
-    i = my_write(index_file, &len, sizeof(int), MYF(0));
-    memcpy(&len, &crashed, sizeof(bool));
-    i = my_write(index_file, &len, sizeof(bool), MYF(0));
-  }
-  DBUG_RETURN(0);
-}
-
-
-
-
-
-
-/* write a row (SDE_INDEX struct) to the index file */
-long long Spartan_index::write_row(art_leaf *leaf)
-{
-  long long pos;
-  int i;
-  int len;
-
-  DBUG_ENTER("Spartan_index::write_row");
-  /* 
-     Seek the end of the file (always append)
-  */
-  pos = my_seek(index_file, 0l, MY_SEEK_END, MYF(0));
-  /*
-    Write the key value.
-  */
-  i = my_write(index_file, leaf->key, max_key_len, MYF(0));
-  memcpy(&pos, &leaf->pos, sizeof(long long));
-  /*
-    Write the file position for the key value.
-  */
-  i = i + my_write(index_file, (uchar *)&pos, sizeof(long long), MYF(0));
-  memcpy(&len, &leaf->key_len, sizeof(int));
-  /*
-    Write the length of the key.
-  */
-  i = i + my_write(index_file, (uchar *)&len, sizeof(int), MYF(0));
-  if (i == -1)
-    pos = i; 
-  DBUG_RETURN(pos);
-}
-
-
-/* read a row (SDE_INDEX struct) from the index file */
-art_leaf *Spartan_index::read_row(long long Position)
-{
-  int i;
-  long long pos;
-  art_leaf *leaf = nullptr;
-  
-  DBUG_ENTER("Spartan_index::read_row");
-  /*
-    Seek the position in the file (Position).
-  */
-  pos = my_seek(index_file,(ulong) Position, MY_SEEK_SET, MYF(0));
-  if (pos != -1L)
-  {
-    leaf = new art_leaf();
-    /*
-      Read the key value.
-    */
-    i = my_read(index_file, leaf->key, max_key_len, MYF(0));
-    /*
-      Read the key value. If error, return NULL.
-    */
-    i = my_read(index_file, (uchar *)&leaf->pos, sizeof(long long), MYF(0));
-    if (i == -1)
-    {
-        delete leaf;
-        leaf = nullptr;
-    }
-  }
-  DBUG_RETURN(leaf);
-}
-
 
 /**
  * Allocates a node of the given type,

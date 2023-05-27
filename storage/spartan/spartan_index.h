@@ -160,11 +160,6 @@ private:
   File index_file;
   int max_key_len;
   int block_size;
-  bool crashed;
-  int read_header();
-  int write_header();
-  long long write_row(art_leaf *leaf);
-  art_leaf *read_row(long long Position);
 };
 
 
