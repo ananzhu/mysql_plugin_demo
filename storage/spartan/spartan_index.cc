@@ -38,7 +38,6 @@
 Spartan_index::Spartan_index(art_tree *t,int keylen)
 {
     t->root = NULL;
-    crashed = false;
     t->size = 0;
     max_key_len = keylen;
     index_file = -1;

@@ -197,7 +197,7 @@ class ha_spartan : public handler {
     There is no need to implement ..._key_... methods if your engine doesn't
     support indexes.
    */
-  uint max_supported_key_length() const { return 128; }
+  uint max_supported_key_length() const { return 254; }
 
   /** @brief
     Called in test_quick_select to determine if indexes should be used.
@@ -253,23 +253,9 @@ class ha_spartan : public handler {
   int index_read(uchar *buf, const uchar *key, uint key_len,
                  enum ha_rkey_function find_flag) override;
 
-
-
-
-
-
-
-
   // 函数读取一个索引文档，该文档包含整个表的所有键值以及其对应的行指针。
   virtual int index_read_idx(uchar *buf, uint index, const uchar *key,
                              uint key_len, enum ha_rkey_function find_flag);
-
-
-
-
-
-
-
 
   // int index_next(uchar *buf) override;
 
@@ -303,16 +289,6 @@ class ha_spartan : public handler {
   */
   int index_last(uchar *buf) override;
 
-
-
-
-
-
-
-
-
-
-
   /** @brief
     Unlike index_init(), rnd_init() can be called two consecutive times
     without rnd_end() in between (it only makes sense if scan=1). In this
@@ -341,8 +317,10 @@ class ha_spartan : public handler {
              dd::Table *table_def) override;  ///< required
 
   uchar *get_key();
+  // uchar *get_key2();
   uchar *create_key_buffer(unsigned int length);
   int get_key_len();
+  // int get_key_len2();
 
   THR_LOCK_DATA **store_lock(
       THD *thd, THR_LOCK_DATA **to,

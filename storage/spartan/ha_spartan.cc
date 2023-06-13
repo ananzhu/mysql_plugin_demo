@@ -147,7 +147,7 @@ Spartan_share::Spartan_share()
 
    index_tree1 = new art_tree();   
 
-   index_class = new Spartan_index(index_tree1,8);
+   index_class = new Spartan_index(index_tree1,255);
    //TODO index class implementation
 }
 
@@ -321,13 +321,7 @@ int ha_spartan::close(void) {
   share->data_class->close_table();
   // share->index_class->save_index();
 
-
-
-
   // share->index_class->destroy_index(index_tree);
-
-
-
 
   // share->index_class->close_index();
   //TODO index
@@ -350,11 +344,31 @@ uchar *ha_spartan::get_key() {
       */
       key = (uchar *)my_malloc(PSI_NOT_INSTRUMENTED,((*field)->field_length),MYF(MY_ZEROFILL | MY_WME));
       memcpy(key, (*field)->field_ptr(), (*field)->key_length());
+      DBUG_RETURN(key);
     }
   }
   DBUG_RETURN(key);
 }
 
+// uchar *ha_spartan::get_key2() {
+//   uchar *key2 = nullptr;
+//   DBUG_ENTER("ha_spartan::get_key");
+
+//   int keyCount = 0; // 计数器，记录找到的关键字段个数
+  
+//   for (Field **field = table->field ; *field ; field++) {
+//     if ((*field)->key_start.to_ulonglong() == 1) {
+//       if (keyCount == 1) {
+//         key2 = (uchar *)my_malloc(PSI_NOT_INSTRUMENTED, ((*field)->field_length), MYF(MY_ZEROFILL | MY_WME));
+//         memcpy(key2, (*field)->field_ptr(), (*field)->key_length());
+//       } else {
+//         keyCount++; // 找到一个关键字段，增加计数器
+//       }
+//     }
+//   }
+
+//   DBUG_RETURN(key2);
+// }
 
 
 int ha_spartan::get_key_len()
@@ -372,9 +386,39 @@ int ha_spartan::get_key_len()
     Copy field length to key length
     */
     length = (*field)->key_length();
+
+    DBUG_RETURN(length);
   }
  DBUG_RETURN(length);
 }
+
+
+
+// int ha_spartan::get_key_len2()
+// {
+//   int length2 = 0;
+//   DBUG_ENTER("ha_spartan::get_key_len");
+
+//   int lenCount = 0; // 计数器，记录找到的关键字段个数
+  
+//   for (Field **field = table->field; *field ; field++)
+//   {
+//     if ((*field)->key_start.to_ulonglong() == 1)
+//     {
+//       if (lenCount == 1)
+//       {
+//         length2 = (*field)->key_length();
+//         break; // 找到第二个关键字段后，跳出循环
+//       }
+//       else
+//       {
+//         lenCount++; // 找到一个关键字段，增加计数器
+//       }
+//     }
+//   }
+
+//   DBUG_RETURN(length2);
+// }
 
 /**
   @brief
@@ -412,13 +456,13 @@ int ha_spartan::write_row(uchar *buf) {
   // art_tree *index_tree;
   // art_tree *index_tree = (art_tree*)malloc(sizeof(art_tree));
   // art_leaf *leaf;
-  art_leaf *leaf = (art_leaf*)malloc(sizeof(art_leaf));
+  //art_leaf *leaf = (art_leaf*)malloc(sizeof(art_leaf));
   DBUG_ENTER("ha_spartan::write_row");
 
   ha_statistic_increment(&System_status_var::ha_write_count);
   // TODO index
-  leaf->key_len = get_key_len();
-  memcpy(leaf->key, get_key(), get_key_len());
+  //leaf->key_len = get_key_len();
+  //memcpy(leaf->key, get_key(), get_key_len());
 
   
   mysql_mutex_lock(&share->mutex);
@@ -427,11 +471,13 @@ int ha_spartan::write_row(uchar *buf) {
   //   // 索引地址
   // pos = share->index_class->write_row(&ndx);
   // 数据地址
-  leaf->pos = pos;
+  //leaf->pos = pos;
 
-  if ((leaf->key != 0) && (leaf->key_len != 0))
-    share->index_class->insert_key(share->index_tree1, leaf->key, leaf->pos, leaf->key_len);
+  if ((get_key() != 0) && (get_key_len() != 0))
+    share->index_class->insert_key(share->index_tree1, get_key(), pos, get_key_len());
 
+  // if ((get_key2() != 0) && (get_key_len2() != 0))
+  //   share->index_class->insert_key(share->index_tree1, get_key2(), pos, get_key_len2());
   
   mysql_mutex_unlock(&share->mutex);
   DBUG_RETURN(0);
@@ -475,6 +521,13 @@ int ha_spartan::update_row(const uchar *old_data, uchar *new_data) {
     // share->index_class->save_index();
     // share->index_class->load_index();
   }
+
+  // if (get_key2() != 0)
+  // {
+  //   share->index_class->update_key(share->index_tree1 ,get_key2(), get_key_len2(), pos_current);
+  //   // share->index_class->save_index();
+  //   // share->index_class->load_index();
+  // }
   
   mysql_mutex_unlock(&share->mutex);
   DBUG_RETURN(0);
@@ -505,13 +558,6 @@ int ha_spartan::delete_row(const uchar *buf) {
   long long pos;
   DBUG_ENTER("ha_spartan::delete_row");
 
-  art_leaf *leaf = (art_leaf*)malloc(sizeof(art_leaf));
-
-  leaf->key_len = get_key_len();
-  memcpy(leaf->key, get_key(), get_key_len());
-
-
-
   if (current_position > 0)
     pos = current_position - share->data_class->row_size(table->s->rec_buff_length);
   else
@@ -521,8 +567,11 @@ int ha_spartan::delete_row(const uchar *buf) {
   share->data_class->delete_row((uchar *)buf, table->s->rec_buff_length, pos);
 
   if (get_key() != 0)
-    share->index_class->delete_key(share->index_tree1 ,leaf->key ,leaf->key_len);
-   
+    share->index_class->delete_key(share->index_tree1 ,get_key() ,get_key_len());
+  
+  // if (get_key2() != 0)
+  //   share->index_class->delete_key(share->index_tree1 ,get_key2() ,get_key_len2());
+  
   mysql_mutex_unlock(&share->mutex);
 
   DBUG_RETURN(0);
@@ -856,13 +905,7 @@ int ha_spartan::delete_all_rows()
 
   share->data_class->trunc_table();
 
-
-
-
   share->index_class->destroy_index(share->index_tree1);
-
-
-
 
   // share->index_class->trunc_index();
 
@@ -1047,13 +1090,10 @@ int ha_spartan::index_read(uchar *buf, const uchar *key, uint key_len, enum ha_r
 
   DBUG_ENTER("ha_archive::index_read");
 
-
-
-
   if (key == NULL)
-     pos = share->index_class->get_first_pos(share->index_tree1);
+    pos = share->index_class->get_first_pos(share->index_tree1);
   else
-  pos = share->index_class->get_index_pos(share->index_tree1 ,(uchar *)key, key_len);
+    pos = share->index_class->get_index_pos(share->index_tree1 ,(uchar *)key, key_len);
   if (pos == -1)
     DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
   current_position = pos + share->data_class->row_size(table->s->rec_buff_length);
@@ -1071,9 +1111,6 @@ int ha_spartan::index_read_idx(uchar *buf, uint index, const uchar *key,
   if (pos == -1)
     DBUG_RETURN(HA_ERR_KEY_NOT_FOUND);
   share->data_class->read_row(buf, table->s->rec_buff_length, pos);
-
-
-
 
   DBUG_RETURN(0);
 }
@@ -1147,7 +1184,7 @@ int ha_spartan::create(const char *name, TABLE *table_arg,
     //TODO index
     // fn_format(name_buff, name, "", SDI_EXT, MY_REPLACE_EXT | MY_UNPACK_FILENAME);
     fn_format(name_buff, name, "", SDI_EXT, MY_UNPACK_FILENAME | MY_APPEND_EXT);
-    if (share->index_class->create_index(name_buff,128))
+    if (share->index_class->create_index(name_buff,255))
     {
         DBUG_PRINT("info", ("hot here 1"));
         DBUG_RETURN(-1);
