@@ -62,6 +62,8 @@ class Spartan_share : public Handler_share {
 
   Spartan_data *data_class;
   Spartan_index *index_class;
+  art_tree *index_tree1;
+  
   
   Spartan_share();
   ~Spartan_share() 
@@ -75,8 +77,12 @@ class Spartan_share : public Handler_share {
     if (index_class != NULL) {
       delete index_class;
     }
+    // if (index_tree1 != NULL) {
+    //   delete index_tree1;
+    // }
     data_class = NULL;
     index_class = NULL;
+    // index_tree1 = NULL;
   }
 };
 
@@ -191,7 +197,7 @@ class ha_spartan : public handler {
     There is no need to implement ..._key_... methods if your engine doesn't
     support indexes.
    */
-  uint max_supported_key_length() const { return 128; }
+  uint max_supported_key_length() const { return 254; }
 
   /** @brief
     Called in test_quick_select to determine if indexes should be used.
@@ -246,29 +252,30 @@ class ha_spartan : public handler {
   //int index_init(uint keynr, bool sorted) override;
   int index_read(uchar *buf, const uchar *key, uint key_len,
                  enum ha_rkey_function find_flag) override;
+
   // 函数读取一个索引文档，该文档包含整个表的所有键值以及其对应的行指针。
   virtual int index_read_idx(uchar *buf, uint index, const uchar *key,
                              uint key_len, enum ha_rkey_function find_flag);
 
-  int index_next(uchar *buf) override;
-
-  /** @brief
-    We implement this in ha_example.cc. It's not an obligatory method;
-    skip it and and MySQL will treat it as not implemented.
-  */
-  int index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,enum ha_rkey_function find_flag) override;
-
-  /** @brief
-    We implement this in ha_example.cc. It's not an obligatory method;
-    skip it and and MySQL will treat it as not implemented.
-  */
   // int index_next(uchar *buf) override;
 
   /** @brief
     We implement this in ha_example.cc. It's not an obligatory method;
     skip it and and MySQL will treat it as not implemented.
   */
-  int index_prev(uchar *buf) override;
+  // int index_read_map(uchar *buf, const uchar *key, key_part_map keypart_map,enum ha_rkey_function find_flag) override;
+
+  // /** @brief
+  //   We implement this in ha_example.cc. It's not an obligatory method;
+  //   skip it and and MySQL will treat it as not implemented.
+  // */
+  // // int index_next(uchar *buf) override;
+
+  // /** @brief
+  //   We implement this in ha_example.cc. It's not an obligatory method;
+  //   skip it and and MySQL will treat it as not implemented.
+  // */
+  // int index_prev(uchar *buf) override;
 
   /** @brief
     We implement this in ha_example.cc. It's not an obligatory method;
@@ -310,8 +317,10 @@ class ha_spartan : public handler {
              dd::Table *table_def) override;  ///< required
 
   uchar *get_key();
+  // uchar *get_key2();
   uchar *create_key_buffer(unsigned int length);
   int get_key_len();
+  // int get_key_len2();
 
   THR_LOCK_DATA **store_lock(
       THD *thd, THR_LOCK_DATA **to,

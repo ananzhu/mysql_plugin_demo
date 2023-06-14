@@ -16,62 +16,179 @@
 */
 #include "my_sys.h"
 
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define NODE4   1
+#define NODE16  2
+#define NODE48  3
+#define NODE256 4
+
+#define MAX_PREFIX_LEN 10
+
+
+#if defined(__GNUC__) && !defined(__clang__)
+# if __STDC_VERSION__ >= 199901L && 402 == (__GNUC__ * 100 + __GNUC_MINOR__)
+/*
+ * GCC 4.2.2's C99 inline keyword support is pretty broken; avoid. Introduced in
+ * GCC 4.2.something, fixed in 4.3.0. So checking for specific major.minor of
+ * 4.2 is fine.
+ */
+#  define BROKEN_GCC_C99_INLINE
+# endif
+#endif
+
 
 const long METADATA_SIZE = sizeof(int) + sizeof(bool);
-/*
-  This is the node that stores the key and the file 
-  position for the data row.
-*/
-struct SDE_INDEX
-{
-  uchar key[128];        
-  long long pos;    
-  int length;
-};
 
-/* defines (doubly) linked list for internal list */
-struct SDE_NDX_NODE
-{
-  SDE_INDEX key_ndx;  
-  SDE_NDX_NODE *next;
-  SDE_NDX_NODE *prev;
-};
+/**
+ * This struct is included as part
+ * of all the various node sizes
+ */
+typedef struct {
+    uint32_t partial_len;
+    uint8_t type;
+    uint8_t num_children;
+    unsigned char partial[MAX_PREFIX_LEN];
+} art_node;
+
+/**
+ * Small node with only 4 children
+ */
+typedef struct {
+    art_node n;
+    unsigned char keys[4];
+    art_node *children[4];
+} art_node4;
+
+/**
+ * Node with 16 children
+ */
+typedef struct {
+    art_node n;
+    unsigned char keys[16];
+    art_node *children[16];
+} art_node16;
+
+/**
+ * Node with 48 children, but
+ * a full 256 byte field.
+ */
+typedef struct {
+    art_node n;
+    unsigned char keys[256];
+    art_node *children[48];
+} art_node48;
+
+/**
+ * Full node with 256 children
+ */
+typedef struct {
+    art_node n;
+    art_node *children[256];
+} art_node256;
+
+/**
+ * Represents a leaf. These are
+ * of arbitrary size, as they include the key.
+ */
+typedef struct {
+    long long pos;
+    int key_len;
+    uchar key[];
+} art_leaf;
+
+/**
+ * Main struct, points to root.
+ */
+typedef struct {
+    art_node *root;
+    uint64_t size;
+} art_tree;
+
+#ifdef __cplusplus
+}
+#endif
 
 class Spartan_index
 {
 public:
-  Spartan_index(int keylen);
+  //Initializes an ART tree
+  Spartan_index(art_tree *t,int keylen);
   Spartan_index();
   ~Spartan_index(void);
+  // Open an ART tree
   int open_index(char *path);
+  // Create an ART tree
   int create_index(char *path, int keylen);
-  int insert_key(SDE_INDEX *ndx, bool allow_dupes);
-  int delete_key(uchar *buf, long long pos, int key_len);
-  int update_key(uchar *buf, long long pos, int key_len);
-  long long get_index_pos(uchar *buf, int key_len);
-  long long get_first_pos();
-  uchar *get_first_key();
-  uchar *get_last_key();
-  uchar *get_next_key();
-  uchar *get_prev_key();
-  int close_index();
-  int load_index();
-  int destroy_index();
-  SDE_INDEX *seek_index(uchar *key, int key_len);
-  SDE_NDX_NODE *seek_index_pos(uchar *key, int key_len);
+  art_node* alloc_node(uint8_t type);
+  // Destroys an ART node
+  void destroy_node(art_node *n);
+  // unsigned long int art_size(art_tree *t);
+  // find the child node
+  art_node** find_child(art_node *n, uchar c);
+  // output the min number
+  int min(int a, int b);
+  // Returns the number of prefix characters shared between the key and node.
+  int check_prefix(const art_node *n, const uchar *key, int key_len, int depth);
+  // Checks if a leaf matches
+  int leaf_matches(const art_leaf *n, const uchar *key, int key_len, int depth);
+  // Find the minimum leaf under a node
+  art_leaf* minimum(const art_node *n);
+  // Find the maximum leaf under a node
+  art_leaf* maximum(const art_node *n);
+  // Returns the minimum valued leaf
+  art_leaf* art_minimum(const art_tree *t);
+  // Returns the maximum valued leaf
+  art_leaf* art_maximum(const art_tree *t);
+  // create the leaf
+  art_leaf* make_leaf(const uchar *key, int key_len, long long pos);
+  // get longest common prefix
+  int longest_common_prefix(art_leaf *l1, art_leaf *l2, int depth);
+  void copy_header(art_node *dest, art_node *src);
+  void add_child256(art_node256 *n, art_node **ref, unsigned char c, void *child);
+  void add_child48(art_node48 *n, art_node **ref, unsigned char c, void *child);
+  void add_child16(art_node16 *n, art_node **ref, unsigned char c, void *child);
+  void add_child4(art_node4 *n, art_node **ref, unsigned char c, void *child);
+  void add_child(art_node *n, art_node **ref, unsigned char c, void *child);
+  // Calculates the index at which the prefixes mismatch
+  int prefix_mismatch(const art_node *n, const uchar *key, int key_len, int depth);
+  long long recursive_insert(art_node *n, art_node **ref, const uchar *key, int key_len, long long pos, int depth, int *old, int replace);
+  //inserts a new key with pos into the art tree
+  long long insert_key(art_tree *t, const uchar *key, long long pos , int length);
+  void remove_child256(art_node256 *n, art_node **ref, unsigned char c);
+  void remove_child48(art_node48 *n, art_node **ref, unsigned char c);
+  void remove_child16(art_node16 *n, art_node **ref, art_node **l);
+  void remove_child4(art_node4 *n, art_node **ref, art_node **l);
+  void remove_child(art_node *n, art_node **ref, unsigned char c, art_node **l);
+  art_leaf* recursive_delete(art_node *n, art_node **ref, const uchar *key, int key_len, int depth);
+  // Delete the key
+  long long delete_key(art_tree *t, const uchar *key, int key_len);
+  // Find the first leaf key
+  uchar* get_first_key(const art_tree *t);
+  // Find the first leaf pos
+  long long get_first_pos(const art_tree *t);
+  // Find the last leaf key
+  uchar* get_last_key(const art_tree *t);
+  // Find the last leaf pos
+  long long get_last_pos(const art_tree *t);
+  // seek the leaf
+  art_leaf* seek_index(const art_tree *t, const uchar *key, int key_len);
+  // Get the pos
+  long long get_index_pos(const art_tree *t, const uchar *key, int key_len);
+  // Update an ART key and pos
+  long long update_key(art_tree *t, uchar *key, int key_len, long long pos);
+  // Destroys an ART tree
+  int destroy_index(art_tree *t);
 
-  int save_index();
-  int trunc_index();
+  //art_tree *index_tree;
 private:
   File index_file;
   int max_key_len;
-  SDE_NDX_NODE *root;
-  SDE_NDX_NODE *range_ptr;
   int block_size;
-  bool crashed;
-  int read_header();
-  int write_header();
-  long long write_row(SDE_INDEX *ndx);
-  SDE_INDEX *read_row(long long Position);
-  long long curfpos();
 };
+
+
